@@ -1,59 +1,58 @@
+// mrext
+// Copyright (c) 2026 mrext contributors.
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// This file is part of mrext.
+//
+// mrext is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// mrext is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with mrext. If not, see <http://www.gnu.org/licenses/>.
+
 package mister
 
 import (
 	"fmt"
-	"github.com/wizzomafizzo/mrext/pkg/config"
 	"os"
+	"syscall"
+	"unsafe"
 )
 
 const (
-	VideoModeScaleFull    = "1"
-	VideoModeScaleHalf    = "2"
-	VideoModeScaleThird   = "3"
-	VideoModeScaleQuarter = "4"
-	VideoModeFormatRGB32  = "18888"
-	VideoModeFormatRGB15  = "11555"
-	VideoModeFormatRGB16  = "1565"
-	VideoModeFormatBGR32  = "08888"
-	VideoModeFormatBGR15  = "01555"
-	VideoModeFormatBGR16  = "0565"
-	VideoModeFormatIDX8   = "08"
-	ResCountPath          = "/sys/module/MiSTer_fb/parameters/res_count"
+	FrameBufferDevice         = "/dev/fb0"
+	framebufferGetVScreenInfo = 0x4600
+	framebufferInfoWords      = 64
 )
 
-// fb_cmd0 = scaled = fb_cmd0 $fmt $rb $scale
-// fb_cmd1 = exact = fb_cmd1 $fmt $rb $width $height
-
-// in vmode script, checks for rescount contents at start, sets mode,
-// then polls until it's the same value (up to 5 times)
-
-func SetVideoMode(width int, height int) error {
-	if _, err := os.Stat(config.CmdInterface); err != nil {
-		return fmt.Errorf("command interface not accessible: %s", err)
-	}
-
-	cmd, err := os.OpenFile(config.CmdInterface, os.O_RDWR, 0)
+// GetScreenResolution returns MiSTer's current framebuffer output resolution.
+func GetScreenResolution() (width, height int, err error) {
+	// #nosec G304 -- framebuffer path is a fixed MiSTer device.
+	framebuffer, err := os.Open(FrameBufferDevice)
 	if err != nil {
-		return err
+		return 0, 0, fmt.Errorf("open framebuffer: %w", err)
 	}
-	defer func(cmd *os.File) {
-		_ = cmd.Close()
-	}(cmd)
+	defer func() { _ = framebuffer.Close() }()
 
-	cmdStr := fmt.Sprintf(
-		"%s %d %d %d",
-		VideoModeFormatRGB32[1:],
-		VideoModeFormatRGB32[0],
-		width,
-		height,
+	// Linux fb_var_screeninfo contains 40 uint32 fields beginning with xres and
+	// yres. Extra capacity ensures ioctl cannot overrun this buffer.
+	var info [framebufferInfoWords]uint32
+	_, _, errno := syscall.Syscall(
+		syscall.SYS_IOCTL,
+		framebuffer.Fd(),
+		framebufferGetVScreenInfo,
+		uintptr(unsafe.Pointer(&info[0])), // #nosec G103 -- ioctl requires kernel ABI pointer.
 	)
-
-	fmt.Println(cmdStr)
-
-	_, err = cmd.WriteString(cmdStr)
-	if err != nil {
-		return err
+	if errno != 0 {
+		return 0, 0, fmt.Errorf("read framebuffer mode: %w", errno)
 	}
 
-	return nil
+	return int(info[0]), int(info[1]), nil
 }
